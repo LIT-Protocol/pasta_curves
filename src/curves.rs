@@ -8,12 +8,12 @@ use core::ops::{Add, Mul, Neg, Sub};
 
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
-
+use elliptic_curve::generic_array::{GenericArray, typenum::U32};
 use ff::{Field, PrimeField};
 use group::{
+    Curve as _, Group as _, GroupEncoding,
     cofactor::{CofactorCurve, CofactorGroup},
     prime::{PrimeCurve, PrimeCurveAffine, PrimeGroup},
-    Curve as _, Group as _, GroupEncoding,
 };
 use rand::RngCore;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
@@ -25,6 +25,8 @@ use super::{Fp, Fq};
 
 #[cfg(feature = "alloc")]
 use crate::arithmetic::{Coordinates, CurveAffine, CurveExt};
+
+pub(crate) type CurveBytes = GenericArray<u8, U32>;
 
 macro_rules! new_curve_impl {
     (($($privacy:tt)*), $name:ident, $name_affine:ident, $iso:ident, $base:ident, $scalar:ident,
@@ -94,9 +96,9 @@ macro_rules! new_curve_impl {
 
             fn identity() -> Self {
                 Self {
-                    x: $base::zero(),
-                    y: $base::zero(),
-                    z: $base::zero(),
+                    x: $base::ZERO,
+                    y: $base::ZERO,
+                    z: $base::ZERO,
                 }
             }
 
@@ -173,7 +175,7 @@ macro_rules! new_curve_impl {
             fn batch_normalize(p: &[Self], q: &mut [Self::AffineRepr]) {
                 assert_eq!(p.len(), q.len());
 
-                let mut acc = $base::one();
+                let mut acc = $base::ONE;
                 for (p, q) in p.iter().zip(q.iter_mut()) {
                     // We use the `x` field of $name_affine to store the product
                     // of previous z-coordinates seen.
@@ -208,7 +210,7 @@ macro_rules! new_curve_impl {
             }
 
             fn to_affine(&self) -> Self::AffineRepr {
-                let zinv = self.z.invert().unwrap_or($base::zero());
+                let zinv = self.z.invert().unwrap_or($base::ZERO);
                 let zinv2 = zinv.square();
                 let x = self.x * zinv2;
                 let zinv3 = zinv2 * zinv;
@@ -253,7 +255,7 @@ macro_rules! new_curve_impl {
         }
 
         impl GroupEncoding for $name {
-            type Repr = [u8; 32];
+            type Repr = CurveBytes;
 
             fn from_bytes(bytes: &Self::Repr) -> CtOption<Self> {
                 $name_affine::from_bytes(bytes).map(Self::from)
@@ -618,8 +620,8 @@ macro_rules! new_curve_impl {
 
             fn identity() -> Self {
                 Self {
-                    x: $base::zero(),
-                    y: $base::zero(),
+                    x: $base::ZERO,
+                    y: $base::ZERO,
                 }
             }
 
@@ -631,7 +633,7 @@ macro_rules! new_curve_impl {
                 $name {
                     x: self.x,
                     y: self.y,
-                    z: $base::conditional_select(&$base::one(), &$base::zero(), self.is_identity()),
+                    z: $base::conditional_select(&$base::ONE, &$base::ZERO, self.is_identity()),
                 }
             }
         }
@@ -658,9 +660,9 @@ macro_rules! new_curve_impl {
         }
 
         impl GroupEncoding for $name_affine {
-            type Repr = [u8; 32];
+            type Repr = CurveBytes;
 
-            fn from_bytes(bytes: &[u8; 32]) -> CtOption<Self> {
+            fn from_bytes(bytes: &Self::Repr) -> CtOption<Self> {
                 let mut tmp = *bytes;
                 let ysign = Choice::from(tmp[31] >> 7);
                 tmp[31] &= 0b0111_1111;
@@ -690,10 +692,10 @@ macro_rules! new_curve_impl {
                 Self::from_bytes(bytes)
             }
 
-            fn to_bytes(&self) -> [u8; 32] {
+            fn to_bytes(&self) -> Self::Repr {
                 // TODO: not constant time
                 if bool::from(self.is_identity()) {
-                    [0; 32]
+                   CurveBytes::default()
                 } else {
                     let (x, y) = (self.x, self.y);
                     let sign = y.is_odd().unwrap_u8() << 7;
@@ -778,6 +780,26 @@ macro_rules! new_curve_impl {
             }
         }
 
+        impl elliptic_curve::ops::MulByGenerator for $name {}
+
+        impl elliptic_curve::ops::LinearCombination for $name {}
+
+        impl elliptic_curve::zeroize::DefaultIsZeroes for $name {}
+
+        impl elliptic_curve::zeroize::DefaultIsZeroes for $name_affine {}
+
+        impl elliptic_curve::point::AffineCoordinates for $name_affine {
+            type FieldRepr = CurveBytes;
+
+            fn x(&self) -> Self::FieldRepr {
+                self.x.to_repr()
+            }
+
+            fn y_is_odd(&self) -> subtle::Choice {
+                self.y.is_odd()
+            }
+        }
+
         impl_binops_additive!($name, $name);
         impl_binops_additive!($name, $name_affine);
         impl_binops_additive_specify_output!($name_affine, $name_affine, $name);
@@ -799,13 +821,13 @@ macro_rules! impl_projective_curve_specific {
         fn generator() -> Self {
             // NOTE: This is specific to b = 5
 
-            const NEGATIVE_ONE: $base = $base::neg(&$base::one());
+            const NEGATIVE_ONE: $base = $base::neg(&$base::ONE);
             const TWO: $base = $base::from_raw([2, 0, 0, 0]);
 
             Self {
                 x: NEGATIVE_ONE,
                 y: TWO,
-                z: $base::one(),
+                z: $base::ONE,
             }
         }
 

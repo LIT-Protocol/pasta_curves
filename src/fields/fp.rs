@@ -1,6 +1,18 @@
+use crate::curves::CurveBytes;
 use core::fmt;
-use core::ops::{Add, Mul, Neg, Sub};
-
+use core::ops::{Add, Div, DivAssign, Mul, Neg, Shr, ShrAssign, Sub};
+use elliptic_curve::{
+    ScalarPrimitive,
+    bigint::{ArrayEncoding, NonZero, U256, U384, U512},
+    generic_array::{
+        GenericArray,
+        typenum::{U48, U64},
+    },
+    hash2curve::{ExpandMsg, Expander},
+    ops::{Invert, Reduce},
+    scalar::{FromUintUnchecked, IsHigh},
+    zeroize::DefaultIsZeroes,
+};
 use ff::{Field, FromUniformBytes, PrimeField, WithSmallOrderMulGroup};
 use rand::RngCore;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
@@ -11,10 +23,11 @@ use lazy_static::lazy_static;
 #[cfg(feature = "bits")]
 use ff::{FieldBits, PrimeFieldBits};
 
-use crate::arithmetic::{adc, mac, sbb, SqrtTableHelpers};
+use crate::arithmetic::{SqrtTableHelpers, adc, decode_hex_into_slice, mac, sbb};
 
 #[cfg(feature = "sqrt-table")]
 use crate::arithmetic::SqrtTables;
+use crate::vesta::Vesta;
 
 /// This represents an element of $\mathbb{F}_p$ where
 ///
@@ -28,12 +41,35 @@ use crate::arithmetic::SqrtTables;
 #[repr(transparent)]
 pub struct Fp(pub(crate) [u64; 4]);
 
+impl DefaultIsZeroes for Fp {}
+
 impl fmt::Debug for Fp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let tmp = self.to_repr();
-        write!(f, "0x")?;
-        for &b in tmp.iter().rev() {
+        write!(f, "{:x}", self)
+    }
+}
+
+impl fmt::Display for Fp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:x}", self)
+    }
+}
+
+impl fmt::LowerHex for Fp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let tmp = self.to_be_bytes();
+        for &b in tmp.iter() {
             write!(f, "{:02x}", b)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::UpperHex for Fp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let tmp = self.to_be_bytes();
+        for &b in tmp.iter() {
+            write!(f, "{:02X}", b)?;
         }
         Ok(())
     }
@@ -41,17 +77,38 @@ impl fmt::Debug for Fp {
 
 impl From<bool> for Fp {
     fn from(bit: bool) -> Fp {
-        if bit {
-            Fp::one()
-        } else {
-            Fp::zero()
-        }
+        if bit { Self::ONE } else { Self::ZERO }
+    }
+}
+
+impl From<u8> for Fp {
+    fn from(value: u8) -> Self {
+        Self([value as u64, 0, 0, 0]) * R2
+    }
+}
+
+impl From<u16> for Fp {
+    fn from(value: u16) -> Self {
+        Self([value as u64, 0, 0, 0]) * R2
+    }
+}
+
+impl From<u32> for Fp {
+    fn from(value: u32) -> Self {
+        Self([value as u64, 0, 0, 0]) * R2
     }
 }
 
 impl From<u64> for Fp {
-    fn from(val: u64) -> Fp {
-        Fp([val, 0, 0, 0]) * R2
+    fn from(val: u64) -> Self {
+        Self([val, 0, 0, 0]) * R2
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+impl From<u128> for Fp {
+    fn from(val: u128) -> Self {
+        Self([val as u64, (val >> 64) as u64, 0, 0]) * R2
     }
 }
 
@@ -102,6 +159,18 @@ impl ConditionallySelectable for Fp {
         ])
     }
 }
+
+const HALF_MODULUS: Fp = Fp([
+    0xcc96987680000000,
+    0x11234c7e04a67c8d,
+    0x0000000000000000,
+    0x2000000000000000,
+]);
+
+#[cfg(not(target_pointer_width = "64"))]
+const HALF_MODULUS_LIMBS_32: [u32; 8] = [
+    0x80000000, 0xcc969876, 0x04a67c8d, 0x11234c7e, 0x00000000, 0x00000000, 0x00000000, 0x20000000,
+];
 
 /// Constant representing the modulus
 /// p = 0x40000000000000000000000000000000224698fc094cf91b992d30ed00000001
@@ -172,6 +241,51 @@ impl<'a, 'b> Mul<&'b Fp> for &'a Fp {
 
 impl_binops_additive!(Fp, Fp);
 impl_binops_multiplicative!(Fp, Fp);
+
+impl<'a, 'b> Div<&'b Fp> for &'a Fp {
+    type Output = Fp;
+
+    fn div(self, rhs: &'b Fp) -> Fp {
+        self * Field::invert(rhs).expect("a non-zero scalar")
+    }
+}
+
+impl Div<&Fp> for Fp {
+    type Output = Fp;
+
+    fn div(self, rhs: &Fp) -> Fp {
+        &self / rhs
+    }
+}
+
+impl Div<Fp> for &Fp {
+    type Output = Fp;
+
+    fn div(self, rhs: Fp) -> Self::Output {
+        self / &rhs
+    }
+}
+
+impl Div for Fp {
+    type Output = Fp;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        &self / &rhs
+    }
+}
+
+impl DivAssign<&Fp> for Fp {
+    fn div_assign(&mut self, rhs: &Fp) {
+        *self = &*self / rhs;
+    }
+}
+
+impl DivAssign for Fp {
+    #[inline]
+    fn div_assign(&mut self, rhs: Self) {
+        *self = &*self / rhs;
+    }
+}
 
 impl<T: ::core::borrow::Borrow<Fp>> ::core::iter::Sum<T> for Fp {
     fn sum<I: Iterator<Item = T>>(iter: I) -> Self {
@@ -255,22 +369,18 @@ const T_MINUS1_OVER2: [u64; 4] = [
 impl Default for Fp {
     #[inline]
     fn default() -> Self {
-        Self::zero()
+        Self::ZERO
     }
 }
 
 impl Fp {
     /// Returns zero, the additive identity.
-    #[inline]
-    pub const fn zero() -> Fp {
-        Fp([0, 0, 0, 0])
-    }
+    pub const ZERO: Self = Self([0, 0, 0, 0]);
 
     /// Returns one, the multiplicative identity.
-    #[inline]
-    pub const fn one() -> Fp {
-        R
-    }
+    pub const ONE: Self = R;
+    /// The number of bytes that represent this value
+    pub const BYTES: usize = 32;
 
     /// Doubles this field element.
     #[inline]
@@ -461,23 +571,184 @@ impl Fp {
 
         Fp([d0 & mask, d1 & mask, d2 & mask, d3 & mask])
     }
+
+    /// Attempts to convert a big-endian byte representation of
+    /// a fp into a `Fp`, failing if the input is not canonical.
+    pub fn from_be_bytes(bytes: &[u8; 32]) -> CtOption<Self> {
+        let mut tmp = Self([0, 0, 0, 0]);
+
+        tmp.0[3] = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
+        tmp.0[2] = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+        tmp.0[1] = u64::from_be_bytes(bytes[16..24].try_into().unwrap());
+        tmp.0[0] = u64::from_be_bytes(bytes[24..32].try_into().unwrap());
+
+        // Try to subtract the modulus
+        let (_, borrow) = sbb(tmp.0[0], MODULUS.0[0], 0);
+        let (_, borrow) = sbb(tmp.0[1], MODULUS.0[1], borrow);
+        let (_, borrow) = sbb(tmp.0[2], MODULUS.0[2], borrow);
+        let (_, borrow) = sbb(tmp.0[3], MODULUS.0[3], borrow);
+
+        // If the element is smaller than MODULUS then the
+        // subtraction will underflow, producing a borrow value
+        // of 0xffff.ffff. Otherwise, it'll be zero.
+        let is_some = (borrow as u8) & 1;
+
+        tmp *= R2;
+        CtOption::new(tmp, Choice::from(is_some))
+    }
+
+    /// Attempts to convert a little-endian byte representation of
+    /// a scalar into a `Fp`, failing if the input is not canonical.
+    pub fn from_le_bytes(bytes: &[u8; 32]) -> CtOption<Self> {
+        let mut tmp = Self([0, 0, 0, 0]);
+
+        tmp.0[0] = u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[0..8]).unwrap());
+        tmp.0[1] = u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[8..16]).unwrap());
+        tmp.0[2] = u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[16..24]).unwrap());
+        tmp.0[3] = u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[24..32]).unwrap());
+
+        // Try to subtract the modulus
+        let (_, borrow) = sbb(tmp.0[0], MODULUS.0[0], 0);
+        let (_, borrow) = sbb(tmp.0[1], MODULUS.0[1], borrow);
+        let (_, borrow) = sbb(tmp.0[2], MODULUS.0[2], borrow);
+        let (_, borrow) = sbb(tmp.0[3], MODULUS.0[3], borrow);
+
+        // If the element is smaller than MODULUS then the
+        // subtraction will underflow, producing a borrow value
+        // of 0xffff...ffff. Otherwise, it'll be zero.
+        let is_some = (borrow as u8) & 1;
+
+        // Convert to Montgomery form by computing
+        // (a.R^0 * R^2) / R = a.R
+        tmp *= &R2;
+
+        CtOption::new(tmp, Choice::from(is_some))
+    }
+
+    /// Converts an element of `Fp` into a byte representation in
+    /// little-endian byte order.
+    pub fn to_le_bytes(&self) -> [u8; 32] {
+        // Turn into canonical form by computing
+        // (a.R) / R = a
+        let tmp = Self::montgomery_reduce(self.0[0], self.0[1], self.0[2], self.0[3], 0, 0, 0, 0);
+
+        let mut res = [0; 32];
+        res[0..8].copy_from_slice(&tmp.0[0].to_le_bytes());
+        res[8..16].copy_from_slice(&tmp.0[1].to_le_bytes());
+        res[16..24].copy_from_slice(&tmp.0[2].to_le_bytes());
+        res[24..32].copy_from_slice(&tmp.0[3].to_le_bytes());
+
+        res
+    }
+
+    /// Converts an element of `Fp` into a byte representation in
+    /// big-endian byte order.
+    pub fn to_be_bytes(&self) -> [u8; 32] {
+        // Turn into canonical form by computing
+        // (a.R) / R = a
+        let tmp = Self::montgomery_reduce(self.0[0], self.0[1], self.0[2], self.0[3], 0, 0, 0, 0);
+
+        let mut res = [0; 32];
+        res[0..8].copy_from_slice(&tmp.0[3].to_be_bytes());
+        res[8..16].copy_from_slice(&tmp.0[2].to_be_bytes());
+        res[16..24].copy_from_slice(&tmp.0[1].to_be_bytes());
+        res[24..32].copy_from_slice(&tmp.0[0].to_be_bytes());
+
+        res
+    }
+
+    /// Create a new [`Fp`] from the provided big endian hex string.
+    pub fn from_be_hex(hex: &str) -> CtOption<Self> {
+        let mut buf = [0u8; Self::BYTES];
+        decode_hex_into_slice(&mut buf, hex.as_bytes());
+        Self::from_be_bytes(&buf)
+    }
+
+    /// Create a new [`Fp`] from the provided little endian hex string.
+    pub fn from_le_hex(hex: &str) -> CtOption<Self> {
+        let mut buf = [0u8; Self::BYTES];
+        decode_hex_into_slice(&mut buf, hex.as_bytes());
+        Self::from_le_bytes(&buf)
+    }
+
+    /// Converts a 512-bit little endian integer into
+    /// a `Fp` by reducing by the modulus.
+    pub fn from_bytes_wide(bytes: &[u8; 64]) -> Self {
+        Self::from_u512([
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[0..8]).unwrap()),
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[8..16]).unwrap()),
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[16..24]).unwrap()),
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[24..32]).unwrap()),
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[32..40]).unwrap()),
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[40..48]).unwrap()),
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[48..56]).unwrap()),
+            u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[56..64]).unwrap()),
+        ])
+    }
+
+    /// Read from output of a KDF
+    pub fn from_okm(bytes: &[u8; 48]) -> Self {
+        const F_2_192: Fp = Fp([
+            0x9b9858f294cf91ba,
+            0x8635bd2c4252b065,
+            0x496d41af7b9cb714,
+            0x1b4b3c4bfffffffc,
+        ]);
+        let d0 = Fp([
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[16..24]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[8..16]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[0..8]).unwrap()),
+            0,
+        ]);
+        let d1 = Fp([
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[40..48]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[32..40]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[24..32]).unwrap()),
+            0,
+        ]);
+        (d0 * R2) * F_2_192 + d1 * R2
+    }
+
+    /// Converts from an integer represented in little endian
+    /// into its (congruent) `Fp` representation.
+    pub const fn from_raw_unchecked(val: [u64; 4]) -> Self {
+        (&Self(val)).mul(&R2)
+    }
+
+    /// Converts this `Fp` into an integer represented in little endian
+    pub const fn to_raw(&self) -> [u64; 4] {
+        let tmp = Self::montgomery_reduce(self.0[0], self.0[1], self.0[2], self.0[3], 0, 0, 0, 0);
+        tmp.0
+    }
+
+    /// Hash input to `Self`
+    pub fn hash<X>(msg: &[u8], dst: &[u8]) -> Self
+    where
+        X: for<'a> ExpandMsg<'a>,
+    {
+        let d = [dst];
+        let mut expander = X::expand_message(&[msg], &d, 48).unwrap();
+        let mut out = [0u8; 48];
+        expander.fill_bytes(&mut out);
+        Self::from_okm(&out)
+    }
 }
 
 impl From<Fp> for [u8; 32] {
     fn from(value: Fp) -> [u8; 32] {
-        value.to_repr()
+        value.to_repr().into()
     }
 }
 
 impl<'a> From<&'a Fp> for [u8; 32] {
     fn from(value: &'a Fp) -> [u8; 32] {
-        value.to_repr()
+        value.to_repr().into()
     }
 }
 
 impl ff::Field for Fp {
-    const ZERO: Self = Self::zero();
-    const ONE: Self = Self::one();
+    const ZERO: Self = Self::ZERO;
+    const ONE: Self = Self::ONE;
 
     fn random(mut rng: impl RngCore) -> Self {
         Self::from_u512([
@@ -531,18 +802,18 @@ impl ff::Field for Fp {
     /// Computes the multiplicative inverse of this element,
     /// failing if the element is zero.
     fn invert(&self) -> CtOption<Self> {
-        let tmp = self.pow_vartime(&[
+        let tmp = self.pow_vartime([
             0x992d30ecffffffff,
             0x224698fc094cf91b,
             0x0,
             0x4000000000000000,
         ]);
 
-        CtOption::new(tmp, !self.ct_eq(&Self::zero()))
+        CtOption::new(tmp, !self.ct_eq(&Self::ZERO))
     }
 
     fn pow_vartime<S: AsRef<[u64]>>(&self, exp: S) -> Self {
-        let mut res = Self::one();
+        let mut res = Self::ONE;
         let mut found_one = false;
         for e in exp.as_ref().iter().rev() {
             for i in (0..64).rev() {
@@ -561,7 +832,7 @@ impl ff::Field for Fp {
 }
 
 impl ff::PrimeField for Fp {
-    type Repr = [u8; 32];
+    type Repr = CurveBytes;
 
     const MODULUS: &'static str =
         "0x40000000000000000000000000000000224698fc094cf91b992d30ed00000001";
@@ -619,7 +890,7 @@ impl ff::PrimeField for Fp {
         // (a.R) / R = a
         let tmp = Fp::montgomery_reduce(self.0[0], self.0[1], self.0[2], self.0[3], 0, 0, 0, 0);
 
-        let mut res = [0; 32];
+        let mut res = CurveBytes::default();
         res[0..8].copy_from_slice(&tmp.0[0].to_le_bytes());
         res[8..16].copy_from_slice(&tmp.0[1].to_le_bytes());
         res[16..24].copy_from_slice(&tmp.0[2].to_le_bytes());
@@ -630,6 +901,12 @@ impl ff::PrimeField for Fp {
 
     fn is_odd(&self) -> Choice {
         Choice::from(self.to_repr()[0] & 1)
+    }
+}
+
+impl AsRef<Fp> for Fp {
+    fn as_ref(&self) -> &Fp {
+        self
     }
 }
 
@@ -776,6 +1053,222 @@ impl ec_gpu::GpuField for Fp {
     }
 }
 
+impl From<ScalarPrimitive<Vesta>> for Fp {
+    fn from(value: ScalarPrimitive<Vesta>) -> Self {
+        Self::from_uint_unchecked(*value.as_uint())
+    }
+}
+
+impl From<&ScalarPrimitive<Vesta>> for Fp {
+    fn from(value: &ScalarPrimitive<Vesta>) -> Self {
+        Self::from_uint_unchecked(*value.as_uint())
+    }
+}
+
+impl From<Fp> for ScalarPrimitive<Vesta> {
+    fn from(value: Fp) -> Self {
+        ScalarPrimitive::from(&value)
+    }
+}
+
+impl From<&Fp> for ScalarPrimitive<Vesta> {
+    fn from(value: &Fp) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        {
+            let mut out = [0u64; 4];
+            out[..4].copy_from_slice(&value.to_raw());
+            elliptic_curve::ScalarPrimitive::new(elliptic_curve::bigint::U256::from_words(out))
+                .unwrap()
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            let mut tmp = [0u64; 4];
+            tmp[..4].copy_from_slice(&value.to_raw());
+            let mut out = [0u32; 8];
+            out[0] = tmp[0] as u32;
+            out[1] = (tmp[0] >> 32) as u32;
+            out[2] = tmp[1] as u32;
+            out[3] = (tmp[1] >> 32) as u32;
+            out[4] = tmp[2] as u32;
+            out[5] = (tmp[2] >> 32) as u32;
+            out[6] = tmp[3] as u32;
+            out[7] = (tmp[3] >> 32) as u32;
+            elliptic_curve::ScalarPrimitive::new(elliptic_curve::bigint::U256::from_words(out))
+                .unwrap()
+        }
+    }
+}
+
+impl From<CurveBytes> for Fp {
+    fn from(value: CurveBytes) -> Self {
+        Self::from_uint_unchecked(elliptic_curve::bigint::U256::from_le_byte_array(value))
+    }
+}
+
+impl From<Fp> for CurveBytes {
+    fn from(value: Fp) -> Self {
+        value.to_repr()
+    }
+}
+
+impl From<U256> for Fp {
+    fn from(value: U256) -> Self {
+        Self::reduce(value)
+    }
+}
+
+impl From<Fp> for U256 {
+    fn from(value: Fp) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        {
+            let arr = value.to_raw();
+            U256::from_words(arr)
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            let tmp = value.to_raw();
+            let mut out = [0u32; 8];
+            out[0] = tmp[0] as u32;
+            out[1] = (tmp[0] >> 32) as u32;
+            out[2] = tmp[1] as u32;
+            out[3] = (tmp[1] >> 32) as u32;
+            out[4] = tmp[2] as u32;
+            out[5] = (tmp[2] >> 32) as u32;
+            out[6] = tmp[3] as u32;
+            out[7] = (tmp[3] >> 32) as u32;
+            U256::from_words(out)
+        }
+    }
+}
+
+impl From<U384> for Fp {
+    fn from(value: U384) -> Self {
+        Self::reduce(value)
+    }
+}
+
+impl From<U512> for Fp {
+    fn from(value: U512) -> Self {
+        Self::reduce(value)
+    }
+}
+
+impl FromUintUnchecked for Fp {
+    type Uint = U256;
+
+    fn from_uint_unchecked(uint: Self::Uint) -> Self {
+        let mut out = [0u64; 4];
+        #[cfg(target_pointer_width = "64")]
+        {
+            out.copy_from_slice(&uint.as_words()[..4]);
+            Self::from_raw_unchecked(out)
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            let words = uint.as_words();
+            let mut i = 0;
+            for index in out.iter_mut() {
+                *index = (words[i + 1] as u64) << 32;
+                *index |= words[i] as u64;
+                i += 2;
+            }
+            Self::from_raw_unchecked(out)
+        }
+    }
+}
+
+impl Invert for Fp {
+    type Output = CtOption<Self>;
+
+    fn invert(&self) -> Self::Output {
+        Field::invert(self)
+    }
+}
+
+impl IsHigh for Fp {
+    fn is_high(&self) -> Choice {
+        let mut borrow = 0;
+        for i in 0..4 {
+            let (_, b) = sbb(HALF_MODULUS.0[i], self.0[i], borrow);
+            borrow = b;
+        }
+        ((borrow == u64::MAX) as u8).into()
+    }
+}
+
+impl Reduce<U256> for Fp {
+    type Bytes = CurveBytes;
+
+    fn reduce(n: U256) -> Self {
+        const MODULUS_256: NonZero<U256> = NonZero::<U256>::const_new(U256::from_be_hex(
+            "40000000000000000000000000000000224698fc094cf91b992d30ed00000001",
+        ))
+        .0;
+        let v = n % MODULUS_256;
+        Self::from_uint_unchecked(v)
+    }
+
+    fn reduce_bytes(bytes: &Self::Bytes) -> Self {
+        Self::reduce(U256::from_be_byte_array(*bytes))
+    }
+}
+
+impl Reduce<U384> for Fp {
+    type Bytes = GenericArray<u8, U48>;
+
+    fn reduce(n: U384) -> Self {
+        const MODULUS_384: NonZero<U384> = NonZero::<U384>::const_new(U384::from_be_hex("0000000000000000000000000000000040000000000000000000000000000000224698fc094cf91b992d30ed00000001")).0;
+        let value = (n % MODULUS_384).resize::<{ U256::LIMBS }>();
+        Self::from_uint_unchecked(value)
+    }
+
+    fn reduce_bytes(bytes: &Self::Bytes) -> Self {
+        Self::reduce(U384::from_be_byte_array(*bytes))
+    }
+}
+
+impl Reduce<U512> for Fp {
+    type Bytes = GenericArray<u8, U64>;
+
+    fn reduce(n: U512) -> Self {
+        const MODULUS_512: NonZero<U512> = NonZero::<U512>::const_new(U512::from_be_hex("000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000224698fc094cf91b992d30ed00000001")).0;
+        let value = (n % MODULUS_512).resize::<{ U256::LIMBS }>();
+        Self::from_uint_unchecked(value)
+    }
+
+    fn reduce_bytes(bytes: &Self::Bytes) -> Self {
+        Self::reduce(U512::from_be_byte_array(*bytes))
+    }
+}
+
+impl Shr<usize> for Fp {
+    type Output = Self;
+
+    fn shr(self, mut rhs: usize) -> Self::Output {
+        // TODO: look for a more efficient method to do this
+        let mut tmp = self;
+        while rhs > 0 {
+            tmp *= Self::TWO_INV;
+            rhs -= 1;
+        }
+        tmp
+    }
+}
+
+impl Shr<usize> for &Fp {
+    type Output = Fp;
+
+    fn shr(self, rhs: usize) -> Self::Output {
+        *self >> rhs
+    }
+}
+
+impl ShrAssign<usize> for Fp {
+    fn shr_assign(&mut self, rhs: usize) {
+        *self = *self >> rhs;
+    }
+}
+
 #[test]
 fn test_inv() {
     // Compute -(r^{-1} mod 2^64) mod 2^64 by exponentiating
@@ -800,7 +1293,7 @@ fn test_sqrt() {
 
 #[test]
 fn test_sqrt_32bit_overflow() {
-    assert!((Fp::from(5)).sqrt().is_none().unwrap_u8() == 1);
+    assert_eq!(Fp::from(5u64).sqrt().is_none().unwrap_u8(), 1);
 }
 
 #[test]
@@ -837,8 +1330,8 @@ fn test_sqrt_ratio_and_alt() {
     assert!(v_alt == v);
 
     // (true, 0), if num is zero
-    let num = Fp::zero();
-    let expected = Fp::zero();
+    let num = Fp::ZERO;
+    let expected = Fp::ZERO;
     let (is_square, v) = Fp::sqrt_ratio(&num, &div);
     assert!(bool::from(is_square));
     assert!(v == expected);
@@ -849,8 +1342,8 @@ fn test_sqrt_ratio_and_alt() {
 
     // (false, 0), if num is nonzero and div is zero
     let num = (Fp::TWO_INV).square();
-    let div = Fp::zero();
-    let expected = Fp::zero();
+    let div = Fp::ZERO;
+    let expected = Fp::ZERO;
     let (is_square, v) = Fp::sqrt_ratio(&num, &div);
     assert!(!bool::from(is_square));
     assert!(v == expected);
@@ -864,18 +1357,18 @@ fn test_zeta() {
     );
 
     let a = Fp::ZETA;
-    assert!(a != Fp::one());
+    assert_ne!(a, Fp::ONE);
     let b = a * a;
-    assert!(b != Fp::one());
+    assert_ne!(b, Fp::ONE);
     let c = b * a;
-    assert!(c == Fp::one());
+    assert_eq!(c, Fp::ONE);
 }
 
 #[test]
 fn test_root_of_unity() {
     assert_eq!(
         Fp::ROOT_OF_UNITY.pow_vartime(&[1 << Fp::S, 0, 0, 0]),
-        Fp::one()
+        Fp::ONE
     );
 }
 

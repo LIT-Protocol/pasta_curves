@@ -7,7 +7,6 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
-#![deny(unsafe_code)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -40,7 +39,7 @@ pub extern crate group;
 #[test]
 fn test_endo_consistency() {
     use crate::arithmetic::CurveExt;
-    use group::{ff::WithSmallOrderMulGroup, Group};
+    use group::{Group, ff::WithSmallOrderMulGroup};
 
     let a = pallas::Point::generator();
     assert_eq!(a * pallas::Scalar::ZETA, a.endo());
