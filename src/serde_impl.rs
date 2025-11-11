@@ -4,17 +4,19 @@ use serde_crate::{
     Deserialize, Deserializer, Serialize, Serializer, de::Error as DeserializeError,
 };
 
+use crate::curves::CurveBytes;
 use crate::{
     curves::{Ep, EpAffine, Eq, EqAffine},
     fields::{Fp, Fq},
     group::Curve,
 };
 
-/// Serializes bytes to human readable or compact representation.
+/// Serializes bytes to human-readable or compact representation.
 ///
-/// Depending on whether the serializer is a human readable one or not, the bytes are either
+/// Depending on whether the serializer is a human-readable one or not, the bytes are either
 /// encoded as a hex string or a list of bytes.
-fn serialize_bytes<S: Serializer>(bytes: [u8; 32], s: S) -> Result<S::Ok, S::Error> {
+fn serialize_bytes<S: Serializer>(bytes: CurveBytes, s: S) -> Result<S::Ok, S::Error> {
+    let bytes: [u8; 32] = bytes.into();
     if s.is_human_readable() {
         hex::serde::serialize(bytes, s)
     } else {
@@ -22,16 +24,17 @@ fn serialize_bytes<S: Serializer>(bytes: [u8; 32], s: S) -> Result<S::Ok, S::Err
     }
 }
 
-/// Deserialize bytes from human readable or compact representation.
+/// Deserialize bytes from human-readable or compact representation.
 ///
-/// Depending on whether the deserializer is a human readable one or not, the bytes are either
+/// Depending on whether the deserializer is a human-readable one or not, the bytes are either
 /// decoded from a hex string or a list of bytes.
-fn deserialize_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
-    if d.is_human_readable() {
+fn deserialize_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<CurveBytes, D::Error> {
+    let r: [u8; 32] = if d.is_human_readable() {
         hex::serde::deserialize(d)
     } else {
         <[u8; 32]>::deserialize(d)
-    }
+    }?;
+    Ok(r.into())
 }
 
 impl Serialize for Fp {
