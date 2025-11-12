@@ -1,5 +1,5 @@
 [package]
-name = "pasta_curves"
+name = "pasta_curves_plus"
 description = "Implementation of the Pallas and Vesta (Pasta) curve cycle"
 version = "0.5.1"
 authors = [
@@ -11,8 +11,9 @@ authors = [
 ]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/zcash/pasta_curves"
-documentation = "https://docs.rs/pasta_curves"
+homepage = "https://crates.io/crates/pasta_curves_plus"
+repository = "https://github.com/LIT-Protocol/pasta_curves"
+documentation = "https://docs.rs/pasta_curves_plus"
 readme = "README.md"
 
 [package.metadata.docs.rs]
