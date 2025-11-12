@@ -1,6 +1,7 @@
 use crate::curves::CurveBytes;
 use core::fmt;
 use core::ops::{Add, Div, DivAssign, Mul, Neg, Shr, ShrAssign, Sub};
+use elliptic_curve::hash2curve::ExpandMsgXmd;
 use elliptic_curve::{
     ScalarPrimitive,
     bigint::{ArrayEncoding, NonZero, U256, U384, U512},
@@ -1265,6 +1266,13 @@ impl Shr<usize> for &Fq {
 impl ShrAssign<usize> for Fq {
     fn shr_assign(&mut self, rhs: usize) {
         *self = *self >> rhs;
+    }
+}
+
+impl frost_dkg::ScalarHash for Fq {
+    fn hash_to_scalar(bytes: &[u8]) -> Self {
+        const DST: &'static [u8] = b"PALLAS_XMD:BLAKE2B-512_RO_NUL_";
+        Self::hash::<ExpandMsgXmd<blake2::Blake2b512>>(bytes, DST)
     }
 }
 

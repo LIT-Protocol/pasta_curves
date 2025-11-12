@@ -8,7 +8,7 @@ use elliptic_curve::{
         GenericArray,
         typenum::{U48, U64},
     },
-    hash2curve::{ExpandMsg, Expander},
+    hash2curve::{ExpandMsg, ExpandMsgXmd, Expander},
     ops::{Invert, Reduce},
     scalar::{FromUintUnchecked, IsHigh},
     zeroize::DefaultIsZeroes,
@@ -1266,6 +1266,13 @@ impl Shr<usize> for &Fp {
 impl ShrAssign<usize> for Fp {
     fn shr_assign(&mut self, rhs: usize) {
         *self = *self >> rhs;
+    }
+}
+
+impl frost_dkg::ScalarHash for Fp {
+    fn hash_to_scalar(bytes: &[u8]) -> Self {
+        const DST: &'static [u8] = b"VESTA_XMD:BLAKE2B-512_RO_NUL_";
+        Self::hash::<ExpandMsgXmd<blake2::Blake2b512>>(bytes, DST)
     }
 }
 
