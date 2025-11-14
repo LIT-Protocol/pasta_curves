@@ -21,7 +21,7 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 #[cfg(feature = "alloc")]
 use ff::WithSmallOrderMulGroup;
 
-use super::{Fp, Fq};
+use super::{Fp, Fq, pallas};
 
 #[cfg(feature = "alloc")]
 use crate::arithmetic::{Coordinates, CurveAffine, CurveExt};
@@ -48,6 +48,20 @@ macro_rules! new_curve_impl {
             const fn curve_constant_b() -> $base {
                 $base::from_raw($b_raw)
             }
+
+            /// Create a new point that is already in the appropriate representation
+            /// x, y, and z must already be in montgomery form
+            pub const fn new_unchecked(
+                x: [u64; 4],
+                y: [u64; 4],
+                z: [u64; 4],
+            ) -> $name {
+                Self {
+                    x: $base(x),
+                    y: $base(y),
+                    z: $base(z),
+                }
+            }
         }
 
         /// Represents a point in the affine coordinate space (or the point at
@@ -57,6 +71,20 @@ macro_rules! new_curve_impl {
         $($privacy)* struct $name_affine {
             x: $base,
             y: $base,
+        }
+
+        impl $name_affine {
+            /// Create a new point that is already in the appropriate representation
+            /// x and y must already be in montgomery form
+            pub const fn new_unchecked(
+                x: [u64; 4],
+                y: [u64; 4]
+            ) -> $name_affine {
+                Self {
+                    x: $base(x),
+                    y: $base(y),
+                }
+            }
         }
 
         impl fmt::Debug for $name_affine {
@@ -1224,4 +1252,47 @@ impl Eq {
         0x53c3808d9e2f2357,
         0x2b3483a1ee9a382f,
     ]);
+}
+
+#[test]
+fn spend_auth_sig() {
+    let pallas_sig = pallas::Point::new_unchecked(
+        [
+            0x490f248c0abc8698,
+            0x8f66e9e53afc5a4a,
+            0x8a4b3d0435fe217d,
+            0x1088a0c632c10d0b,
+        ],
+        [
+            0xe6900acd3de44a97,
+            0x24ecf6ed2f7b5e04,
+            0x79d25b841a7b961d,
+            0x0cfbbe1efe9c580b,
+        ],
+        [
+            0x34786d38fffffffd,
+            0x992c350be41914ad,
+            0xffffffffffffffff,
+            0x3fffffffffffffff,
+        ],
+    );
+    assert_eq!(
+        pallas_sig.x,
+        Fp([
+            0x490f248c0abc8698,
+            0x8f66e9e53afc5a4a,
+            0x8a4b3d0435fe217d,
+            0x1088a0c632c10d0b,
+        ])
+    );
+    assert_eq!(
+        pallas_sig.y,
+        Fp([
+            0xe6900acd3de44a97,
+            0x24ecf6ed2f7b5e04,
+            0x79d25b841a7b961d,
+            0x0cfbbe1efe9c580b,
+        ])
+    );
+    assert_eq!(pallas_sig.z, Fp::ONE);
 }

@@ -1307,53 +1307,53 @@ fn test_sqrt_32bit_overflow() {
 fn test_pow_by_t_minus1_over2() {
     // NB: TWO_INV is standing in as a "random" field element
     let v = (Fp::TWO_INV).pow_by_t_minus1_over2();
-    assert!(v == ff::Field::pow_vartime(&Fp::TWO_INV, &T_MINUS1_OVER2));
+    assert_eq!(v, ff::Field::pow_vartime(&Fp::TWO_INV, &T_MINUS1_OVER2));
 }
 
 #[test]
 fn test_sqrt_ratio_and_alt() {
     // (true, sqrt(num/div)), if num and div are nonzero and num/div is a square in the field
-    let num = (Fp::TWO_INV).square();
-    let div = Fp::from(25);
-    let div_inverse = div.invert().unwrap();
-    let expected = Fp::TWO_INV * Fp::from(5).invert().unwrap();
+    let num = Fp::TWO_INV.square();
+    let div = Fp::from(25u32);
+    let div_inverse = Field::invert(&div).unwrap();
+    let expected = Fp::TWO_INV * Field::invert(&Fp::from(5u32)).unwrap();
     let (is_square, v) = Fp::sqrt_ratio(&num, &div);
     assert!(bool::from(is_square));
     assert!(v == expected || (-v) == expected);
 
     let (is_square_alt, v_alt) = Fp::sqrt_alt(&(num * div_inverse));
     assert!(bool::from(is_square_alt));
-    assert!(v_alt == v);
+    assert_eq!(v_alt, v);
 
     // (false, sqrt(ROOT_OF_UNITY * num/div)), if num and div are nonzero and num/div is a nonsquare in the field
     let num = num * Fp::ROOT_OF_UNITY;
-    let expected = Fp::TWO_INV * Fp::ROOT_OF_UNITY * Fp::from(5).invert().unwrap();
+    let expected = Fp::TWO_INV * Fp::ROOT_OF_UNITY * Field::invert(&Fp::from(5u32)).unwrap();
     let (is_square, v) = Fp::sqrt_ratio(&num, &div);
     assert!(!bool::from(is_square));
     assert!(v == expected || (-v) == expected);
 
     let (is_square_alt, v_alt) = Fp::sqrt_alt(&(num * div_inverse));
     assert!(!bool::from(is_square_alt));
-    assert!(v_alt == v);
+    assert_eq!(v_alt, v);
 
     // (true, 0), if num is zero
     let num = Fp::ZERO;
     let expected = Fp::ZERO;
     let (is_square, v) = Fp::sqrt_ratio(&num, &div);
     assert!(bool::from(is_square));
-    assert!(v == expected);
+    assert_eq!(v, expected);
 
     let (is_square_alt, v_alt) = Fp::sqrt_alt(&(num * div_inverse));
     assert!(bool::from(is_square_alt));
-    assert!(v_alt == v);
+    assert_eq!(v_alt, v);
 
     // (false, 0), if num is nonzero and div is zero
-    let num = (Fp::TWO_INV).square();
+    let num = Fp::TWO_INV.square();
     let div = Fp::ZERO;
     let expected = Fp::ZERO;
     let (is_square, v) = Fp::sqrt_ratio(&num, &div);
     assert!(!bool::from(is_square));
-    assert!(v == expected);
+    assert_eq!(v, expected);
 }
 
 #[test]
@@ -1381,12 +1381,15 @@ fn test_root_of_unity() {
 
 #[test]
 fn test_inv_root_of_unity() {
-    assert_eq!(Fp::ROOT_OF_UNITY_INV, Fp::ROOT_OF_UNITY.invert().unwrap());
+    assert_eq!(
+        Fp::ROOT_OF_UNITY_INV,
+        Field::invert(&Fp::ROOT_OF_UNITY).unwrap()
+    );
 }
 
 #[test]
 fn test_inv_2() {
-    assert_eq!(Fp::TWO_INV, Fp::from(2).invert().unwrap());
+    assert_eq!(Fp::TWO_INV, Field::invert(&Fp::from(2u32)).unwrap());
 }
 
 #[test]
