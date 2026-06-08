@@ -1,3 +1,10 @@
+<!-- lit-archived-banner -->
+> ⚠️ **This repository is archived and is no longer maintained.**
+>
+> Lit Protocol has kept it publicly available for **educational and reference purposes only**. Code here may be out of date and is not supported.
+
+---
+
 # `pasta_curves`
 
 This crate provides an implementation of the Pasta elliptic curve constructions,
